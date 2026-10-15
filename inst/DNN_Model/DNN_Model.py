@@ -30,7 +30,7 @@ class Models(nn.Module):
     One method to approximate f(), the DNN method.
     The residual e follows the N, SN or ST distribution.
     """
-    def __init__(self, p, hidden_size, model, seed = None):
+    def __init__(self, p, hidden_size, model, depth, pena_coef = 0.1, seed = None):
         super().__init__()
         
         # set random seed
@@ -43,9 +43,8 @@ class Models(nn.Module):
                 print("Seed must be an integer or None. Use seed = 100 instead.")
                 torch.manual_seed(100)
         
-        # the model type, must be one of "N-GX-D","SN-GX-D","ST-GX-D",
-        # "N-GX-B","SN-GX-B","ST-GX-B","N-FX","SN-FX","ST-FX".
         self.model = model
+        self.pena_coef = torch.tensor([pena_coef]).to(device,dtype = torch.float32)
         
         # model dimensions
         p = int(p)
@@ -56,94 +55,106 @@ class Models(nn.Module):
         self.ReLU = nn.ReLU()
         
         # define the model input
-        model_input_ones = torch.ones((int(1e2),hidden_size)) * 1e-2
-        model_input_ones = model_input_ones.to(device, dtype = torch.float32)
-        self.model_input_ones = model_input_ones
+        model_input_eye = torch.eye(64,64)
+        model_input_eye = model_input_eye.to(device, dtype = torch.float32)
+        self.model_input_eye = model_input_eye
         
         # define layers for the estimation of beta
-        self.betain = nn.Linear(hidden_size, hidden_size)
-        self.beta1 = nn.Linear(hidden_size, hidden_size)
-        self.beta2 = nn.Linear(hidden_size, hidden_size)
-        self.betaout = nn.Linear(hidden_size, p)
+        self.betain = nn.Linear(64, 64)
+        self.beta1 = nn.Linear(64, 64)
+        self.betaout = nn.Linear(64, p)
+        # INITIALIZATION: Set beta output bias to 0 and small weights
+        nn.init.constant_(self.betaout.bias, 0.0)
+        nn.init.xavier_uniform_(self.betaout.weight, gain=0.01)
         
         # define layers for the estimation of sigma
-        self.sigmain = nn.Linear(hidden_size, hidden_size)
-        self.sigma1 = nn.Linear(hidden_size, hidden_size)
-        self.sigma2 = nn.Linear(hidden_size, hidden_size)
-        self.sigmaout = nn.Linear(hidden_size, 1)
+        self.sigmain = nn.Linear(64, 64)
+        self.sigma1 = nn.Linear(64, 64)
+        self.sigmaout = nn.Linear(64, 1)
+        # INITIALIZATION: exp(0) = 1.0
+        nn.init.constant_(self.sigmaout.bias, 0.0)
         
         # for SN and ST
-        if not (model == "N-GX-D" or model == "N-GX-B" or model == "N-FX"):
+        if model in ["ST-GX-D","SN-GX-D","ST-GX-B","SN-GX-B","ST-FX","SN-FX"]:
             # define layers for the estimation of w
-            self.win = nn.Linear(hidden_size, hidden_size)
-            self.w1 = nn.Linear(hidden_size, hidden_size)
-            self.w2 = nn.Linear(hidden_size, hidden_size)
-            self.wout = nn.Linear(hidden_size, 1)
+            self.win = nn.Linear(64, 64)
+            self.w1 = nn.Linear(64, 64)
+            self.wout = nn.Linear(64, 1)
+            # INITIALIZATION: sigmoid(0) = 0.5
+            nn.init.constant_(self.wout.bias, 0.0)
         
-        # for ST only
-        if model == "ST-GX-D" or model == "ST-GX-B" or model == "ST-FX":
+        # for ST or T only
+        if model in ["ST-GX-D", "ST-GX-B", "ST-FX", "T-GX-D", "T-GX-PB"]:    
             # define layers for the estimation of delta
-            self.deltain = nn.Linear(hidden_size, hidden_size)
-            self.delta1 = nn.Linear(hidden_size, hidden_size)
-            self.delta2 = nn.Linear(hidden_size, hidden_size)
-            self.deltaout = nn.Linear(hidden_size, 1)
+            self.deltain = nn.Linear(64, 64)
+            self.delta1 = nn.Linear(64, 64)
+            self.deltaout = nn.Linear(64, 1)
+            # INITIALIZATION: Set bias to -3.88 to start degrees of freedom near 6.0
+            nn.init.constant_(self.deltaout.bias, -3.88)
         
         # for g() DNN only
-        if model == "ST-GX-D" or model == "SN-GX-D" or model == "N-GX-D":
+        if model in ["ST-GX-D", "SN-GX-D", "N-GX-D", "MED-GX-D", "T-GX-D"]:
             # define layers for the estimation of the single-index function
             self.SIMin = nn.Linear(1, hidden_size)
-            self.SIM1 = nn.Linear(hidden_size, hidden_size)
-            self.SIM2 = nn.Linear(hidden_size, hidden_size)
+            
+            # Create 'depth' number of hidden layers
+            self.SIM_hidden = nn.ModuleList([
+                nn.Linear(hidden_size, hidden_size) for _ in range(depth)
+            ])
+            
             self.SIMout = nn.Linear(hidden_size, 1)
 
         # for g() Bernstein only
-        if model == "ST-GX-B" or model == "SN-GX-B" or model == "N-GX-B":
+        if model in ["ST-GX-B", "SN-GX-B", "N-GX-B", "MED-GX-B", "T-GX-PB"]:
             self.L = 50
             # define layers for the estimation of the single-index function
-            self.SIMin = nn.Linear(hidden_size, hidden_size)
-            self.SIM1 = nn.Linear(hidden_size, hidden_size)
-            self.SIM2 = nn.Linear(hidden_size, hidden_size)
-            self.SIMout = nn.Linear(hidden_size, self.L + 1)
+            self.SIMin = nn.Linear(64, 128)
+            self.SIM1 = nn.Linear(128, 128)
+            self.SIMout = nn.Linear(128, self.L + 1)
         
         # for f() only
         if model == "ST-FX" or model == "SN-FX" or model == "N-FX":
             # define layers for the estimation of f(X)
-            self.fin = nn.Linear(p, hidden_size)
-            self.f1 = nn.Linear(hidden_size, hidden_size)
-            self.f2 = nn.Linear(hidden_size, hidden_size)
-            self.fout = nn.Linear(hidden_size, 1)
+            self.fin = nn.Linear(p, 512)
+            self.f1 = nn.Linear(512, 512)
+            self.f2 = nn.Linear(512, 512)
+            self.fout = nn.Linear(512, 1)
     
     def forward(self, X):
-        # for g() only
-        if self.model == "ST-GX-D" or self.model == "ST-GX-B" or self.model == "SN-GX-D" or self.model == "SN-GX-B" or self.model == "N-GX-D" or self.model == "N-GX-B":
+        # for beta - single index models only
+        if self.model in {"ST-GX-D", "ST-GX-B", "SN-GX-D", "SN-GX-B", "N-GX-D", "N-GX-B", "MED-GX-D", "MED-GX-B", "T-GX-D", "T-GX-PB"}:
             # beta estimation
-            out1 = self.ReLU(self.betain(self.model_input_ones))
+            out1 = self.ReLU(self.betain(self.model_input_eye))
             out1 = self.ReLU(self.beta1(out1))
-            out1 = self.ReLU(self.beta2(out1))
             out1 = self.betaout(out1)
             out1 = torch.mean(out1,0)
             out1 = out1 / torch.linalg.norm(out1)
         
         # for g()-DNN only
-        if self.model == "ST-GX-D" or self.model == "SN-GX-D" or self.model == "N-GX-D":
+        if self.model in {"ST-GX-D", "SN-GX-D", "N-GX-D", "MED-GX-D", "T-GX-D"}:
             # the single index function estimation
             eta = X @ out1
             X_nrow = X.shape[0]
-            eta = eta.reshape((X_nrow,1))
+            eta = eta.reshape((X_nrow, 1))
+            
+            # Input layer
             out5 = self.Tanh(self.SIMin(eta))
-            out5 = self.Tanh(self.SIM1(out5))
-            out5 = self.Tanh(self.SIM2(out5))
+            
+            # Dynamic hidden layers
+            for layer in self.SIM_hidden:
+                out5 = self.Tanh(layer(out5))
+            
+            # Output layer
             out5 = self.SIMout(out5)
             out5 = out5.flatten()
         
-        # for g()-Bernstein only
-        if self.model == "ST-GX-B" or self.model == "SN-GX-B" or self.model == "N-GX-B":
+        # for single index model by Bernstein only
+        if self.model in ["ST-GX-B","SN-GX-B","N-GX-B","MED-GX-B", "T-GX-PB"]:
             eta = X @ out1
             eta = eta.flatten()
             B_mat = bernstein_matrix(L = self.L, x = eta)
-            out7 = self.ReLU(self.SIMin(self.model_input_ones))
+            out7 = self.ReLU(self.SIMin(self.model_input_eye))
             out7 = self.ReLU(self.SIM1(out7))
-            out7 = self.ReLU(self.SIM2(out7))
             out7 = self.SIMout(out7)
             out7 = torch.mean(out7,axis = 0)
             out7 = out7.flatten()
@@ -161,29 +172,27 @@ class Models(nn.Module):
             out6 = self.fout(out6).flatten()
         
         # for SN and ST
-        if not (self.model == "N-GX-D" or self.model == "N-GX-B" or self.model == "N-FX"):
+        if self.model in ["ST-GX-D","SN-GX-D","ST-GX-B","SN-GX-B","ST-FX","SN-FX"]:
             # w estimation
-            out2 = self.ReLU(self.win(self.model_input_ones))
+            out2 = self.ReLU(self.win(self.model_input_eye))
             out2 = self.ReLU(self.w1(out2))
-            out2 = self.ReLU(self.w2(out2))
             out2 = self.wout(out2)
             out2 = torch.mean(out2)
             out2 = 1.0 / (1.0 + torch.exp(-1.0 * out2))
         
         # sigma estimation
-        out3 = self.ReLU(self.sigmain(self.model_input_ones))
-        out3 = self.ReLU(self.sigma1(out3))
-        out3 = self.ReLU(self.sigma2(out3))
-        out3 = self.sigmaout(out3)
-        out3 = torch.mean(out3)
-        out3 = torch.exp(out3)
+        if not (self.model in ["MED-GX-D"]):
+            out3 = self.ReLU(self.sigmain(self.model_input_eye))
+            out3 = self.ReLU(self.sigma1(out3))
+            out3 = self.sigmaout(out3)
+            out3 = torch.mean(out3)
+            out3 = torch.exp(out3)
         
-        # for ST only
-        if self.model == "ST-GX-D" or self.model == "ST-GX-B" or self.model == "ST-FX":
+        # for ST or T
+        if self.model in ["ST-GX-D", "ST-GX-B", "ST-FX", "T-GX-D", "T-GX-PB"]:
             # delta estimation
-            out4 = self.ReLU(self.deltain(self.model_input_ones))
+            out4 = self.ReLU(self.deltain(self.model_input_eye))
             out4 = self.ReLU(self.delta1(out4))
-            out4 = self.ReLU(self.delta2(out4))
             out4 = self.deltaout(out4)
             out4 = torch.mean(out4)
             # use expit function to ensure numerical stability
@@ -206,6 +215,12 @@ class Models(nn.Module):
                       "delta":out4,
                       "theta":out5}
         
+        if self.model == "T-GX-D":
+            output = {"beta":out1,
+                      "sigma":out3,
+                      "delta":out4,
+                      "theta":out5}
+        
         if self.model == "SN-GX-D":
             output = {"beta":out1,
                       "w":out2,
@@ -216,10 +231,21 @@ class Models(nn.Module):
             output = {"beta":out1,
                       "sigma":out3,
                       "theta":out5}
+                      
+        if self.model == "MED-GX-D":
+            output = {"beta":out1,
+                      "theta":out5}
             
         if self.model == "ST-GX-B":
             output = {"beta":out1,
                       "w":out2,
+                      "sigma":out3,
+                      "delta":out4,
+                      "theta":out5,
+                      "Bernstein polynomials coefficients":out7}
+        
+        if self.model == "T-GX-PB":
+            output = {"beta":out1,
                       "sigma":out3,
                       "delta":out4,
                       "theta":out5,
@@ -235,6 +261,11 @@ class Models(nn.Module):
         if self.model == "N-GX-B":
             output = {"beta":out1,
                       "sigma":out3,
+                      "theta":out5,
+                      "Bernstein polynomials coefficients":out7}
+        
+        if self.model == "MED-GX-B":
+            output = {"beta":out1,
                       "theta":out5,
                       "Bernstein polynomials coefficients":out7}
         
@@ -255,7 +286,7 @@ class Models(nn.Module):
         
         return output
 
-def Train_Model(model,XT,yT,num_epochs,verbatim):
+def Train_Model(model,XT,yT,num_epochs,lr0,decayRate,verbatim):
     """
     The program to train the proposed DNN model (no generative bootstrap).
 
@@ -269,6 +300,10 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
         The response vector.
     num_epochs : int
         The number of times the optimazation algroithm sees the entire data set.
+    lr0 : double
+        The initialized learning rates.
+    decayRate : double
+        Multiplicative factor of learning rate decay.
     verbatim : bool
         The indication variable that decides whether print log messages to the console.
 
@@ -315,11 +350,9 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
                                       shuffle=True)
     
     # initilize the optimizer
-    lr0 = 1e-3
     optimizer = torch.optim.Adam(model.parameters(), lr = lr0)
-    decayRate = 0.999
     my_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer = optimizer, 
-                                                             gamma=decayRate)
+                                                             gamma = decayRate)
     
     # record loss function
     loss_list = [None] * num_epochs
@@ -333,6 +366,20 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
             if model.model == "ST-GX-D":
                 beta_output = model_output["beta"]
                 w_output = model_output["w"]
+                sigma_output = model_output["sigma"]
+                delta_output = model_output["delta"]
+                SIM_output = model_output["theta"]
+        
+                # define loss_value
+                loss_value = loss_ST(x = yB,
+                                     w = w_output,
+                                     theta = SIM_output,
+                                     sigma = sigma_output,
+                                     delta = delta_output)
+            
+            if model.model == "T-GX-D":
+                beta_output = model_output["beta"]
+                w_output = torch.tensor([0.5]).to(device, dtype = torch.float32)
                 sigma_output = model_output["sigma"]
                 delta_output = model_output["delta"]
                 SIM_output = model_output["theta"]
@@ -364,6 +411,16 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
                 # define loss_value
                 loss_value = (0.5 * torch.square(yB - SIM_output)) / torch.square(sigma_output) + torch.log(sigma_output)
             
+            # Biostatistics journal revision round 1
+            # median regression
+            
+            if model.model == "MED-GX-D":
+                beta_output = model_output["beta"]
+                SIM_output = model_output["theta"]
+                
+                # define loss_value
+                loss_value = torch.abs(yB - SIM_output)
+            
             if model.model == "ST-GX-B":
                 w_output = model_output["w"]
                 delta_output = model_output["delta"]
@@ -378,6 +435,21 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
                                      theta = SIM_output,
                                      sigma = sigma_output,
                                      delta = delta_output)
+            
+            if model.model == "T-GX-PB":
+                w_output = torch.tensor([0.5]).to(device, dtype = torch.float32)
+                delta_output = model_output["delta"]
+                beta_output = model_output["beta"]
+                sigma_output = model_output["sigma"]
+                SIM_output = model_output["theta"]
+                Bernstein_output = model_output["Bernstein polynomials coefficients"]
+                
+                # define loss_value
+                loss_value = loss_ST(x = yB,
+                                     w = w_output,
+                                     theta = SIM_output,
+                                     sigma = sigma_output,
+                                     delta = delta_output) + model.pena_coef * torch.sum(torch.pow(Bernstein_output, 2.0))
             
             if model.model == "SN-GX-B":
                 w_output = model_output["w"]
@@ -400,6 +472,14 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
         
                 # define loss_value
                 loss_value = (0.5 * torch.square(yB - SIM_output)) / torch.square(sigma_output) + torch.log(sigma_output)
+            
+            if model.model == "MED-GX-B":
+                beta_output = model_output["beta"]
+                SIM_output = model_output["theta"]
+                Bernstein_output = model_output["Bernstein polynomials coefficients"]
+                
+                # define loss_value
+                loss_value = torch.abs(yB - SIM_output)
             
             if model.model == "ST-FX":
                 delta_output = model_output["delta"]
@@ -441,7 +521,7 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
             optimizer.step()
             my_lr_scheduler.step()
             
-            if model.model == "ST-GX-D" or model.model == "SN-GX-D" or model.model == "N-GX-D":
+            if model.model in ["ST-GX-D", "T-GX-D", "SN-GX-D", "N-GX-D", "MED-GX-D"]:
                 # ensure weights associated with the single index functoin are non-negative
                 for name, param in model.named_parameters():
                     if ("weight" in name) and ("SIM" in name):
@@ -450,7 +530,7 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
         # record loss in this epoch
         loss_list[epoch-1] = loss_epoch
     
-    if model.model in {"ST-GX-D", "SN-GX-D", "N-GX-D", "ST-GX-B", "SN-GX-B", "N-GX-B"}:
+    if model.model in {"ST-GX-D", "T-GX-D", "SN-GX-D", "N-GX-D", "MED-GX-D", "ST-GX-B", "T-GX-PB", "SN-GX-B", "N-GX-B", "MED-GX-B"}:
         # calculate the SIM using all X
         SIM_output = model(X)["theta"]
     
@@ -483,6 +563,16 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
                   "residuals_output": residuals_output,
                   "loss_output": loss_output}
     
+    if model.model == "T-GX-D":
+        # define the output
+        output = {"beta_output":beta_output,
+                  "sigma_output":sigma_output,
+                  "delta_output":delta_output,
+                  "SIM_output":SIM_output,
+                  "U_output": U_output,
+                  "residuals_output": residuals_output,
+                  "loss_output": loss_output}
+    
     if model.model == "SN-GX-D":
         # define the output
         output = {"beta_output":beta_output,
@@ -501,11 +591,30 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
                   "U_output": U_output,
                   "residuals_output": residuals_output,
                   "loss_output": loss_output}
+                  
+    if model.model == "MED-GX-D":
+        # define the output
+        output = {"beta_output":beta_output,
+                  "SIM_output":SIM_output,
+                  "U_output": U_output,
+                  "residuals_output": residuals_output,
+                  "loss_output": loss_output}
     
     if model.model == "ST-GX-B":
         # define the output
         output = {"beta_output":beta_output,
                   "w_output":w_output,
+                  "sigma_output":sigma_output,
+                  "delta_output":delta_output,
+                  "SIM_output":SIM_output,
+                  "Bernstein_output":Bernstein_output,
+                  "U_output": U_output,
+                  "residuals_output": residuals_output,
+                  "loss_output": loss_output}
+    
+    if model.model == "T-GX-PB":
+        # define the output
+        output = {"beta_output":beta_output,
                   "sigma_output":sigma_output,
                   "delta_output":delta_output,
                   "SIM_output":SIM_output,
@@ -529,6 +638,15 @@ def Train_Model(model,XT,yT,num_epochs,verbatim):
         # define the output
         output = {"beta_output":beta_output,
                   "sigma_output":sigma_output,
+                  "SIM_output":SIM_output,
+                  "Bernstein_output":Bernstein_output,
+                  "U_output": U_output,
+                  "residuals_output": residuals_output,
+                  "loss_output": loss_output}
+    
+    if model.model == "MED-GX-B":
+        # define the output
+        output = {"beta_output":beta_output,
                   "SIM_output":SIM_output,
                   "Bernstein_output":Bernstein_output,
                   "U_output": U_output,
@@ -595,14 +713,14 @@ def Model_prediction_gX(model,beta_estimation,start,stop,num):
     X = X.to(device, dtype = torch.float32)
     model_output = model(X)
     
-    if model.model in {"ST-GX-D", "SN-GX-D", "N-GX-D", "ST-GX-B", "SN-GX-B", "N-GX-B"}:
+    if model.model in {"ST-GX-D", "T-GX-D", "SN-GX-D", "N-GX-D", "MED-GX-D", "ST-GX-B", "T-GX-PB", "SN-GX-B", "N-GX-B", "MED-GX-B"}:
         SIM_output = model_output["theta"]
 
     output = {"eta": np.linspace(start = start, stop = stop, num = num),
               "predicted_value": SIM_output.cpu().detach().numpy()}
     return output
 
-def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
+def CV_function(XT,yT,model_type,hidden_size,depth,K,num_epochs,lr0,decayRate,verbatim):
     """
     Function for K-folder Cross-Validation.
 
@@ -613,11 +731,19 @@ def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
     yT : torch.Tensor
         The response vector.
     model_type : str
-        The type of model. Must be one of ST-GX-D, SN-GX-D, N-GX-D, ST-GX-B, SN-GX-B, N-GX-B, ST-FX, SN-FX, N-FX.
+        The type of model. 
+    hidden_size: int
+        The width of the neural network models.
+    depth: int
+        The depth of the neural networt models.
     K: int
         The K of the K-folder Cross-Validation
     num_epochs: int
         The number of epochs for training the model.
+    lr0 : double
+        The initialized learning rates.
+    decayRate : double
+        Multiplicative factor of learning rate decay.
     verbatim : bool
         The indication variable that decides whether print log messages to the console.
     
@@ -627,11 +753,6 @@ def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
         The dictionary of the output consisting of MSE and MAE.
 
     """
-    # ensure model type is correct
-    valid_model_types = {"ST-GX-D", "SN-GX-D", "N-GX-D", "ST-GX-B", "SN-GX-B", "N-GX-B", "ST-FX", "SN-FX", "N-FX"}
-    if model_type not in valid_model_types:
-        print("model_type must be one of ST-GX-D, SN-GX-D, N-GX-D, ST-GX-B, SN-GX-B, N-GX-B, ST-FX, SN-FX, N-FX.")
-        return
     
     X = copy.deepcopy(XT)
     y = copy.deepcopy(yT)
@@ -646,7 +767,6 @@ def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
         y = y.to(device = device, dtype = torch.float32)
     
     # setting of the DNN models
-    hidden_size = 512
     p = X.shape[1]
     
     # initiate the function's output
@@ -658,7 +778,7 @@ def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
 
     for CV_iter, (train_index, test_index) in enumerate(kf.split(X)):
         print("Cross Validation: ", CV_iter + 1, "of ", K)
-        model_DNN = Models(p,hidden_size,model_type).to(device)
+        model_DNN = Models(p,hidden_size,model_type,depth).to(device)
 
         X_train = X[train_index,:]
         X_test = X[test_index,:]
@@ -671,6 +791,8 @@ def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
                                        XT = X_train,
                                        yT = y_train,
                                        num_epochs = num_epochs,
+                                       lr0 = lr0,
+                                       decayRate = decayRate,
                                        verbatim = verbatim)
 
         model_DNN_output = model_DNN(X_test)
@@ -688,7 +810,7 @@ def CV_function(XT,yT,model_type,K,num_epochs,verbatim):
     
     return output 
 
-def ST_GX_D_Bootstrap_Single_Iteration(Trained_Model,DNN_train_output,XB,num_epochs,seed,verbatim):
+def ST_GX_D_Bootstrap_Single_Iteration(Trained_Model,DNN_train_output,XB,hidden_size,depth,num_epochs,lr0,decayRate,seed,verbatim):
     """
     The function for the parametric bootstrap procedure for one iteration. 
     This function is ONLY suitable for the ST-GX-D model.
@@ -701,8 +823,16 @@ def ST_GX_D_Bootstrap_Single_Iteration(Trained_Model,DNN_train_output,XB,num_epo
         The trained ST-GX-D model's output.
     XB : torch.Tensor
         The design matrix.
+    hidden_size: int
+        The width of the neural network models.
+    depth: int
+        The depth of the neural networt models.
     num_epochs : int
         The number of epochs for training the model.
+    lr0 : double
+        The initialized learning rates.
+    decayRate : double
+        Multiplicative factor of learning rate decay.
     seed : int
         The random seed.
     verbatim : bool
@@ -736,14 +866,15 @@ def ST_GX_D_Bootstrap_Single_Iteration(Trained_Model,DNN_train_output,XB,num_epo
     ## option 1 (abandoned): used the pre-trained model as the initial model.
     ## model_DNN = copy.deepcopy(Trained_Model)
     ## option 2: initilize a different model
-    hidden_size = 512
     p = XB.shape[1]
-    model_DNN = Models(p,hidden_size,"ST-GX-D").to(device)
+    model_DNN = Models(p,hidden_size,"ST-GX-D",depth).to(device)
 
     Train_Model_output = Train_Model(model = model_DNN, 
                                      XT = XB,
                                      yT = yB,
                                      num_epochs = num_epochs,
+                                     lr0 = lr0,
+                                     decayRate = decayRate,
                                      verbatim = verbatim)
     ## estimation of g() function based on the bootstrap sample
     g_output = Model_prediction_gX(model = model_DNN,
@@ -761,7 +892,7 @@ def ST_GX_D_Bootstrap_Single_Iteration(Trained_Model,DNN_train_output,XB,num_epo
               "g_output":g_output}
     return output
 
-def ST_GX_D_Bootstrap(Trained_Model,DNN_train_output,XB,num_epochs,num_bootstrap,verbatim):
+def ST_GX_D_Bootstrap(Trained_Model,DNN_train_output,XB,hidden_size,depth,num_epochs,lr0,decayRate,num_bootstrap,verbatim):
     """
     The function for the parametric bootstrap procedure for the ST-GX-D model.
 
@@ -773,8 +904,16 @@ def ST_GX_D_Bootstrap(Trained_Model,DNN_train_output,XB,num_epochs,num_bootstrap
         The trained ST-GX-D model's output.
     XB : torch.Tensor
         The design matrix.
+    hidden_size: int
+        The width of the neural network models.
+    depth: int
+        The depth of the neural networt models.
     num_epochs : int
         The number of epochs for training the model.
+    lr0 : double
+        The initialized learning rates.
+    decayRate : double
+        Multiplicative factor of learning rate decay.
     num_bootstrap : int
         The number of bootstrap iterations.
     verbatim : bool
@@ -801,7 +940,11 @@ def ST_GX_D_Bootstrap(Trained_Model,DNN_train_output,XB,num_epochs,num_bootstrap
             output[count] = ST_GX_D_Bootstrap_Single_Iteration(Trained_Model = Trained_Model,
                                                                DNN_train_output = DNN_train_output,
                                                                XB = XB,
+                                                               hidden_size = hidden_size,
+                                                               depth = depth,
                                                                num_epochs = num_epochs,
+                                                               lr0 = lr0,
+                                                               decayRate = decayRate,
                                                                seed = seed,
                                                                verbatim = verbatim)
             count = count + 1

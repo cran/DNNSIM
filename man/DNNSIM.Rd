@@ -9,13 +9,14 @@
 This is the summary page. No return value.
 }
 \description{
-Provides a deep neural network model with a monotonic increasing single index function tailored for periodontal disease studies. The residuals are assumed to follow a skewed T distribution, a skewed normal distribution, or a normal distribution. More details can be found at Liu, Huang, and Bai (2024) \url{doi:10.1016/j.csda.2024.108012}.
+Provides a deep neural network model with a monotonic increasing single index function tailored for periodontal disease studies. The residuals are assumed to follow a skewed T distribution, a skewed normal distribution, or a normal distribution. More details can be found at Liu, Wang, Bai and Bandyopadhyay (2025) <arXiv:2505.02153>.
 }
 \author{
 \strong{Maintainer}: Qingyang Liu \email{rh8liuqy@gmail.com} (\href{https://orcid.org/0000-0003-3265-6330}{ORCID})
 
 Authors:
 \itemize{
+  \item Qingyang Liu \email{rh8liuqy@gmail.com} (\href{https://orcid.org/0000-0003-3265-6330}{ORCID})
   \item Shijie Wang \email{shijiew.usc@gmail.com}
   \item Ray Bai \email{rbai@mailbox.sc.edu} (\href{https://orcid.org/0000-0002-7190-7844}{ORCID})
   \item Dipankar Bandyopadhyay \email{dbandyop@vcu.edu}

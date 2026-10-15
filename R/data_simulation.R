@@ -13,6 +13,10 @@
 #'
 #' @references
 #' \insertRef{liu2022bayesian}{DNNSIM}
+#' 
+#' \insertRef{liu2025}{DNNSIM}
+#' 
+#' \insertRef{Liu2026}{DNNSIM}
 #'
 #' @export
 #'

@@ -9,6 +9,10 @@ DNN_model(
   data,
   model,
   num_epochs,
+  NN_width = 512,
+  NN_depth = 2,
+  learning_rate = 0.001,
+  decayRate = 0.999,
   verbatim = TRUE,
   CV = FALSE,
   CV_K = 10,
@@ -18,7 +22,8 @@ DNN_model(
   U_new = FALSE,
   U_min = -4,
   U_max = 4,
-  random_state = 100
+  random_state = 100,
+  pena_coef = 0.1
 )
 }
 \arguments{
@@ -26,11 +31,19 @@ DNN_model(
 
 \item{data}{a data frame.}
 
-\item{model}{the model type. It must be be one of "N-GX-D","SN-GX-D","ST-GX-D","N-GX-B","SN-GX-B","ST-GX-B","N-FX","SN-FX","ST-FX".}
+\item{model}{the model type. It must be be one of "N-GX-D","SN-GX-D","ST-GX-D","N-GX-B","SN-GX-B","ST-GX-B","N-FX","SN-FX","ST-FX","MED-GX-D","MED-GX-B","T-GX-D","T-GX-PB".}
 
 \item{num_epochs}{an integer. The number of complete passes through the training dataset.}
 
-\item{verbatim}{TRUE/FALSE.If \code{verbatim} is \code{TRUE}, then log information from training the DNN-SIM model will be printed.}
+\item{NN_width}{an integer. The width of the neural network. It must be at least 64.}
+
+\item{NN_depth}{an integer. The depth of the neural network. It must be at least 1.}
+
+\item{learning_rate}{a numeric value. The initialized learning rate. Must be a positive value, typically less than or equal to 0.1.}
+
+\item{decayRate}{a numeric value. The multiplicative factor of learning rate decay. Must be between 0 and 1 (exclusive of 0).}
+
+\item{verbatim}{TRUE/FALSE.If `verbatim` is `TRUE`, then log information from training the DNN-SIM model will be printed.}
 
 \item{CV}{TRUE/FALSE. Whether use the cross-validation to measure the prediction accuracy.}
 
@@ -49,6 +62,8 @@ DNN_model(
 \item{U_max}{a numeric value. The maximum of the self defined U.}
 
 \item{random_state}{an integer. The random seed for initiating the neural network.}
+
+\item{pena_coef}{A positive numeric value. The penalty coefficient for the "T-GX-PB" model. The penalty term is defined as `pena_coef` multiplied by the squared L2 norm of the Bernstein coefficients.}
 }
 \value{
 A list consisting of the point estimation, g function estimation (optional), cross-validation results (optional) and bootstrap results(optional).
@@ -99,4 +114,8 @@ if (reticulate::py_module_available("torch") &
 }
 \references{
 \insertRef{liu2022bayesian}{DNNSIM}
+
+\insertRef{liu2025}{DNNSIM}
+
+\insertRef{Liu2026}{DNNSIM}
 }
